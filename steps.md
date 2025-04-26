@@ -73,7 +73,7 @@ This guide provides a step-by-step process for setting up and deploying the Carg
             *   `ecr_repo_name`: Base name for your ECR repository (e.g., "backend-app").
             *   `ecr_image_tag`: Initial tag (e.g., "latest"). CI/CD will deploy specific tags later.
             *   `allowed_ssh_cidr_blocks`: **Replace `["YOUR_IP/32"]` with a list containing your actual public IP address followed by `/32`. Example: `["1.2.3.4/32"]`. This is crucial for security.**
-            *   `allowed_app_cidr_blocks`: Keep as `["0.0.0.0/0"]` if the API needs to be publicly accessible, or restrict as needed.
+            *   `allowed_app_cidr_blocks`: Keep as `["0.0.0.0/0"]` if the API needs to be publicly accessible via HTTP/HTTPS, or restrict as needed.
     *   *(No sensitive variables needed for this minimal setup unless added later)*
 
 7.  **Run Terraform (Dev Environment):**
@@ -84,7 +84,8 @@ This guide provides a step-by-step process for setting up and deploying the Carg
         terraform plan # Review planned changes (reads terraform.tfvars automatically)
         terraform apply # Apply changes (type 'yes' to confirm)
         ```
-    *   This command provisions the core AWS resources: VPC, ECR, **EC2 Instance**, Security Groups, IAM Roles. The EC2 instance's `user_data` script **only installs prerequisites** like Docker and AWS CLI. **It does NOT pull or run your application container.**
+    *   This command provisions the core AWS resources: VPC, ECR, **EC2 Instance**, Security Groups, IAM Roles. The EC2 instance's `user_data` script **installs prerequisites** (Docker, AWS CLI) and **configures Nginx with a self-signed certificate** to act as an HTTPS reverse proxy. **It does NOT pull or run your application container.**
+    *   **Note:** If you modify the `user_data` script later (e.g., to update Nginx config), you may need to run `terraform taint module.aws_compute.aws_instance.app_server` before `terraform apply` to force the instance to be replaced so the new script runs. See `troubleshooting_guide.md`.
 
 8.  **Retrieve Terraform Outputs:**
     *   After a successful `apply`, while still in `environments/dev`, run:
@@ -177,7 +178,7 @@ This guide provides a step-by-step process for setting up and deploying the Carg
                 *   `docker pull <ECR_REPOSITORY_URL>:<new-tag>`
                 *   `docker stop <your-app-container-name> || true`
                 *   `docker rm <your-app-container-name> || true`
-                *   `docker run -d --name <your-app-container-name> -p 8000:8000 --restart always -e ENVIRONMENT=dev -e DATABASE_URL="$DATABASE_URL_SECRET" -e SECRET_KEY="$SECRET_KEY_SECRET" ... <ECR_REPOSITORY_URL>:<new-tag>` (Inject secrets from env context)
+                *   `docker run -d --name <your-app-container-name> -p 127.0.0.1:8000:8000 --restart always -e ENVIRONMENT=dev -e DATABASE_URL="$DATABASE_URL_SECRET" -e SECRET_KEY="$SECRET_KEY_SECRET" ... <ECR_REPOSITORY_URL>:<new-tag>` (Inject secrets from env context. **Crucially, map port 8000 only to the host's loopback interface `127.0.0.1`** so Nginx can proxy to it.)
 
 ## Phase 4: Development & Deployment Cycle (Developer Role)
 
@@ -187,7 +188,9 @@ This guide provides a step-by-step process for setting up and deploying the Carg
     *   **Result:** The GitHub Action automatically triggers, builds the Docker image, pushes it to ECR, and **triggers the deployment via SSH** to update the container running on the EC2 instance.
 
 14. **Testing:**
-    *   Access the backend API directly via `http://<EC2_PUBLIC_IP_FROM_STEP_8>:8000/docs` (or other relevant paths). Allow time for the deployment step in the workflow to complete.
+    *   Access the backend API via HTTPS: `https://<EC2_PUBLIC_IP_FROM_STEP_8>/docs` (or other relevant paths).
+    *   **Expect Certificate Warning:** You will need to bypass the browser/client security warning because a self-signed certificate is used. Click "Advanced", "Proceed", or use `curl -k`.
+    *   Allow time for the deployment step in the workflow to complete after a push.
 
 15. **Updating Running Backend Container (Manual Alternatives):**
     *   If the CI/CD pipeline fails or for emergency manual updates:

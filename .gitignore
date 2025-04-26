@@ -32,3 +32,6 @@ override.tf.json
 # Ignore CLI configuration files
 .terraformrc
 terraform.rc
+
+# Ignore custom secure compute module (example/case study)
+modules/aws_compute_secure/

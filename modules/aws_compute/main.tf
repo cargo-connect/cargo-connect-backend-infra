@@ -5,10 +5,10 @@
 
 resource "aws_ecr_repository" "backend" {
   name                 = "${var.ecr_repo_name}-${var.environment}"
-  image_tag_mutability = "MUTABLE"
+  image_tag_mutability = "MUTABLE" 
 
   image_scanning_configuration {
-    scan_on_push = true
+    scan_on_push = true 
   }
 
   tags = {
@@ -145,6 +145,15 @@ resource "aws_security_group" "ec2_sg" {
     description = "Allow HTTP Traffic"
   }
 
+  # Allow access via HTTPS
+  ingress {
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = var.allowed_app_cidr_blocks # Use the same source IPs as port 80/8000
+    description = "Allow HTTPS Traffic"
+  }
+
   # Allow all outbound traffic
   egress {
     from_port   = 0
@@ -193,29 +202,90 @@ resource "aws_instance" "app_server" {
 
   # User data script to setup and run the Docker container
   user_data = <<-EOF
-              #!/bin/bash
-              set -e # Exit immediately if a command exits with a non-zero status.
-              # Log stdout/stderr to /var/log/user-data.log and console
-              exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
+#!/bin/bash
+set -e # Exit immediately if a command exits with a non-zero status.
+# Log stdout/stderr to /var/log/user-data.log and console
+exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
 
-              echo "Starting user data script..."
+echo "Starting user data script..."
 
-              # Install updates and Docker
-              apt-get update -y
-              # Install Docker, AWS CLI, jq (for parsing metadata)
-              apt-get install -y docker.io awscli jq
-              echo "Docker and AWS CLI installed."
+# Install updates and Docker
+apt-get update -y
+# Install Docker, AWS CLI, jq (for parsing metadata)
+apt-get install -y docker.io awscli jq nginx
 
-              # Start and enable Docker service
-              systemctl start docker
-              systemctl enable docker
-              echo "Docker service started and enabled."
+echo "Docker, AWS CLI, Nginx installed."
 
-              # Add ubuntu user to docker group to run docker commands without sudo (optional, requires logout/login or newgrp)
-              usermod -aG docker ubuntu
+# Start and enable Docker service
+systemctl start docker
+systemctl enable docker
+echo "Docker service started and enabled."
 
-              echo "User data script finished (Instance bootstrapped)."
-              EOF
+# Add ubuntu user to docker group to run docker commands without sudo (optional, requires logout/login or newgrp)
+usermod -aG docker ubuntu
+
+# --- Setup Nginx and Self-Signed Cert for HTTPS ---
+echo "Generating self-signed certificate..."
+# Create directory for certs
+mkdir -p /etc/nginx/ssl
+# Generate cert and key (valid for 365 days, no passphrase)
+# Use instance's public hostname (or IP if hostname isn't available quickly) for CN
+INSTANCE_HOSTNAME=$(curl -s http://169.254.169.254/latest/meta-data/public-hostname || curl -s http://169.254.169.254/latest/meta-data/public-ipv4 || echo "localhost")
+openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+    -keyout /etc/nginx/ssl/nginx-selfsigned.key \
+    -out /etc/nginx/ssl/nginx-selfsigned.crt \
+    -subj "/C=XX/ST=State/L=City/O=Org/CN=$${INSTANCE_HOSTNAME}" # Escaped $ for Terraform
+
+echo "Configuring Nginx as reverse proxy..."
+# Create Nginx config for reverse proxy
+# Note: Assumes backend app runs on port 8000
+cat > /etc/nginx/sites-available/default <<'NGINX_CONF'
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+
+    # Redirect all HTTP traffic to HTTPS
+    server_name _;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl default_server;
+    listen [::]:443 ssl default_server;
+
+    server_name _; # Catch all hostnames
+
+    ssl_certificate /etc/nginx/ssl/nginx-selfsigned.crt;
+    ssl_certificate_key /etc/nginx/ssl/nginx-selfsigned.key;
+
+    # Improve SSL security (Optional but recommended)
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers off;
+    # Add other SSL settings as needed (HSTS, etc.)
+
+    location / {
+        proxy_pass http://127.0.0.1:8000; # Proxy to backend app on port 8000 (use 127.0.0.1 for clarity)
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        # WebSocket support (if needed)
+        # proxy_http_version 1.1;
+        # proxy_set_header Upgrade $http_upgrade;
+        # proxy_set_header Connection "upgrade";
+    }
+}
+NGINX_CONF
+
+echo "Enabling and restarting Nginx..."
+systemctl enable nginx
+systemctl restart nginx
+
+# Note: Container deployment (pulling image, docker run) is handled by the CI/CD pipeline (e.g., GitHub Actions).
+# Ensure the container exposes port 8000 internally for Nginx proxy_pass.
+
+echo "User data script finished (Docker installed, Nginx HTTPS proxy configured)."
+EOF
 
   tags = {
     Name        = "${var.project_name}-app-server-${var.environment}" # Use variable
