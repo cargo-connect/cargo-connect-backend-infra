@@ -243,10 +243,16 @@ cat > /etc/nginx/sites-available/default <<'NGINX_CONF'
 server {
     listen 80 default_server;
     listen [::]:80 default_server;
+    server_name _; # Catch all hostnames
 
-    # Redirect all HTTP traffic to HTTPS
-    server_name _;
-    return 301 https://$host$request_uri;
+    # Proxy API requests directly over HTTP for all paths
+    location / {
+        proxy_pass http://127.0.0.1:8000; # Ensure this is your FastAPI app's address and port
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
 }
 
 server {
@@ -264,7 +270,7 @@ server {
     # Add other SSL settings as needed (HSTS, etc.)
 
     location / {
-        proxy_pass http://127.0.0.1:8000; # Proxy to backend app on port 8000 (use 127.0.0.1 for clarity)
+        proxy_pass http://127.0.0.1:8000; # Proxy to backend app on port 8000 (use 127.0.0.1 for clarity)        
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
