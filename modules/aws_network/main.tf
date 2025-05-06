@@ -15,8 +15,8 @@ module "vpc" {
   private_subnets = var.private_subnet_cidrs
   public_subnets  = var.public_subnet_cidrs
 
-  enable_nat_gateway = true # Needed for private subnet instances
-  single_nat_gateway = true # Cost-effective for non-HA setups
+  enable_nat_gateway = false # Needed for private subnet instances
+  single_nat_gateway = false # Cost-effective for non-HA setups
 
   tags = {
     Terraform   = "true"
